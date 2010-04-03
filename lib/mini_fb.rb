@@ -1,6 +1,9 @@
 require 'digest/md5'
 require 'erb'
 require 'json' unless defined? JSON
+require 'socket'
+require 'uri'
+require 'net/http'
 
 module MiniFB
 
@@ -148,6 +151,11 @@ module MiniFB
             kwargs.delete("call_id")
         end
 
+        if method == "photos.upload"
+          filename = kwargs.fetch("filename")
+          kwargs.delete("filename")
+        end
+
         custom_format = kwargs.include?("format") or kwargs.include?("callback")
         kwargs["format"] ||= "JSON"
         kwargs["v"] ||= FB_API_VERSION
@@ -162,7 +170,11 @@ module MiniFB
 
         # Call website with POST request
         begin
+          if method == "photos.upload"
+            response = MiniFB.post_upload(filename, kwargs)
+          else
             response = Net::HTTP.post_form( URI.parse(FB_URL), kwargs )
+          end
         rescue SocketError => err
             raise IOError.new( "Cannot connect to the facebook server: " + err )
         end
@@ -191,6 +203,33 @@ module MiniFB
             end
         end
         return data
+    end
+
+    def MiniFB.post_upload(filename, kwargs)
+      content = File.open(filename, 'rb') { |f| f.read }
+      boundary = Digest::MD5.hexdigest(content)
+      header = {'Content-type' => "multipart/form-data, boundary=#{boundary}"}
+
+      # Build query
+      query = ''
+      kwargs.each { |a, v|
+        query <<
+          "--#{boundary}\r\n" <<
+          "Content-Disposition: form-data; name=\"#{a}\"\r\n\r\n" <<
+          "#{v}\r\n"
+      }
+      query <<
+        "--#{boundary}\r\n" <<
+        "Content-Disposition: form-data; filename=\"#{File.basename(filename)}\"\r\n" <<
+        "Content-Transfer-Encoding: binary\r\n" <<
+        "Content-Type: image/jpeg\r\n\r\n" <<
+        content <<
+        "\r\n" <<
+        "--#{boundary}--"
+
+      # Call Facebook with POST multipart/form-data request
+      uri = URI.parse(FB_URL)
+      Net::HTTP.start(uri.host) {|http| http.post uri.path, query, header}
     end
 
     # Returns true is signature is valid, false otherwise.
